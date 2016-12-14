@@ -1,0 +1,199 @@
+<?php
+/**
+ * @file
+ * Collect email addresses from a form within a page or block.
+ */
+/**
+ * Implements hook_menu().
+ */
+function signupform_menu() {
+  $items = array();
+  $items['node/%/subscribe'] = array(
+    'title' => 'Subscribe',
+    'description' => 'Subscribe to this node',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('signupform_email_form',1),
+    'access callback' => 'signupform_access_subscribe_tab',
+    'access arguments' => array('create signupform subscriptions', 1),'type' => MENU_LOCAL_TASK,
+  );
+  $items['admin/config/content/signupform'] = array(
+    'title' => 'signupform Settings',
+    'description' => 'Administer signupform Settings.',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('signupform_admin_settings_form'),
+    'access arguments' => array('administer signupform
+     settings'),
+    'file' => 'signupform.admin.inc',
+  );
+$items['admin/reports/signupform'] = array(
+    'title' => 'signupform Signups',
+    'description' => 'View signupform Signups',
+    'page callback' => 'signupform_signups',
+    'access arguments' => array('view signupform report'),
+    'file' => 'signupform.admin.inc',
+  );
+  return $items;
+}
+function signupform_email_form($form, $form_state, $nid = 0) {
+  global $user;
+  $form['email'] = array(
+    '#title' => t('Email address'),
+    '#type' => 'textfield',
+    '#size' => 25,
+    '#description' => t('Join our mailing list'),
+    '#required' => TRUE,
+    '#default_value' => isset($user->mail) ? $user->mail : '',
+  );
+  $form['submit'] = array(
+    '#type' => 'submit',
+    '#value' => t('Sign Up'),
+  );
+  $form['nid'] = array(
+    '#type' => 'hidden',
+    '#value' => $nid,
+  );
+  return $form;
+}
+function signupform_email_form_validate($form, &$form_state) {
+  $email = $form_state['values']['email'];
+  if (!valid_email_address($email)) {
+    $message = t('The address %email is not a valid email address. Please re-enter your address.', array('%email' => $email));
+    form_set_error('email', $message);
+  }
+$nid = $form_state['values']['nid'];
+$previous_signup = db_query("SELECT mail FROM {signupform} WHERE nid = :nid AND 
+mail = :mail", array('nid' => $nid, 'mail' => $email))->fetchField();
+  if ($previous_signup) {
+    form_set_error('email', t('The address %email is already subscribed to this 
+list.', array('%email' => $email)));
+  }
+}
+function signupform_email_form_submit($form, &$form_state) {
+  $nid = isset($form_state['values']['nid']) ? $form_state['values']['nid'] : 0;
+  if ($nid && is_numeric($nid)) { 
+    signupform_signup($form_state['values']['email'], $nid);
+    drupal_set_message(t('Thank you for joining the mailing list. You have been added as %email.', array('%email' => $form_state['values']['email'])));
+  }
+}
+function signupform_signup($email, $nid) {
+  global $user;
+  $value = array(
+    'nid' => $nid,
+    'uid' => $user->uid,
+    'mail' => $email,
+    'created' => time(),
+  );  
+  drupal_write_record('signupform', $value);
+}
+function signupform_permission() {
+  $perm = array(
+    'submit signupform signups' => array(
+      'title' => t('Submit signupform Signups'),
+    ),  
+    'view signupform report' => array(
+      'title' => t('View signupform Subscriptions Report'),
+    ),  
+    'administer signupform settings' => array(
+      'title' => t('Administer signupform Settings'),
+    )   
+  );  
+  return $perm;
+}
+function signupform_block_info() {
+  $blocks = array();
+  $blocks['signupform_subscribe'] = array(
+    'info' => t('signupform Signup Form'),
+  );
+  return $blocks;
+} 
+function signupform_block_view($delta) {
+  $block = array();
+  switch ($delta) {
+  case 'signupform_subscribe':
+     if (arg(0) == 'node' && is_numeric(arg(1)) && signupform_get_node_enabled(arg(1))){
+      $nid = arg(1);
+	  $form = drupal_get_form('signupform_email_form',$nid);
+      $block = array(
+        'subject' => t('Sign Up for this node'),
+        'content' => theme('signupform_block', array('form' => drupal_render($form))),
+      );
+    } 
+    break;
+  }
+  return $block;
+}
+function signupform_theme() {
+  $theme = array();
+  $theme['signupform_block'] = array(
+    'variables' => array(
+      'form' => '',
+    ),
+    'template' => 'signupform-block',
+  );
+  return $theme;
+}
+function signupform_form_node_form_alter(&$form, $form_state) {
+  $node = $form['#node'];
+  $types = variable_get('signupform_types', array());
+  if (!empty($types[$node->type]) && user_access('administer signupform settings')) {
+    $form['signupform'] = array(
+      '#title' => t('signupform'),
+      '#type' => 'fieldset',
+      '#collapsible' => TRUE,
+      '#collapsed' => FALSE,
+      '#group' => 'additional_settings',
+    );
+    $form['signupform']['signupform_enabled'] = array(
+      '#title' => t('Collect e-mail addresses for this node.'),
+      '#type' => 'checkbox',
+      '#default_value' => isset($node->signupform_enabled) ? 
+$node->signupform_enabled : FALSE,
+    );
+  }
+}
+function signupform_get_node_enabled($nid){
+  if (is_numeric($nid)) {
+    $result = db_query("SELECT nid FROM {signupform_enabled}
+      WHERE nid = :nid", array('nid' => $nid))->fetchField();
+    if ($result) {
+      return TRUE;
+    }   
+  }
+  return FALSE;
+}
+function signupform_set_node_enabled($nid){
+  if (is_numeric($nid) &! signupform_get_node_enabled($nid)) {
+      db_insert('signupform_enabled')
+        ->fields(array('nid' => $nid))
+        ->execute();
+  }
+}
+function signupform_delete_node_enabled($nid) {
+  if (is_numeric($nid)) {
+    db_delete('signupform_enabled')
+      ->condition('nid', $nid)
+      ->execute();
+  }
+}
+function signupform_node_load($nodes, $types) {
+  foreach ($nodes as $nid => $node) {
+    $node->signupform_enabled = signupform_get_node_enabled($node->nid);
+  }
+}
+function signupform_node_insert($node) {
+  if ($node->signupform_enabled) {
+    signupform_set_node_enabled($node->nid);
+  }
+}
+function signupform_node_update($node) {
+  signupform_delete_node_enabled($node->nid);
+  if ($node->signupform_enabled) {
+    signupform_set_node_enabled($node->nid);
+  }
+}
+function signupform_node_delete($node) {
+  signupform_delete_node_enabled($node->nid);
+}
+function signupform_access_subscribe_tab($permission, $nid) {
+    return signupform_get_node_enabled($nid) && user_access($permission);
+}
